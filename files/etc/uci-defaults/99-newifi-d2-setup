@@ -1,0 +1,497 @@
+#!/bin/sh
+# ============================================================
+# /etc/uci-defaults/99-newifi-d2-setup
+# Script chạy 1 lần khi flash firmware lần đầu
+# Tối ưu cho setup: Newifi D2 (tầng 1) + Router ISP (tầng 2)
+# ============================================================
+
+# === LAN: 192.168.1.1 ===
+uci set network.lan.ipaddr='192.168.1.1'
+uci set network.lan.netmask='255.255.255.0'
+uci set network.lan.proto='static'
+
+# === WAN: PPPoE (ISP Việt Nam) ===
+uci set network.wan.proto='pppoe'
+uci set network.wan.device='wan'
+uci set network.wan.username='__PPPOE_USERNAME__'
+uci set network.wan.password='__PPPOE_PASSWORD__'
+uci set network.wan.ipv6='0'
+uci set network.wan.peerdns='0'
+uci add_list network.wan.dns='1.1.1.1'
+uci add_list network.wan.dns='8.8.8.8'
+
+# === Hardware Flow Offloading (GIẢM NHIỆT + TĂNG TỐC) ===
+# CPU không cần xử lý routing → giảm tải → bớt nóng
+uci set firewall.@defaults[0].flow_offloading='1'
+uci set firewall.@defaults[0].flow_offloading_hw='1'
+uci commit firewall
+
+# === Packet Steering (chia đều 2 core → giảm nhiệt) ===
+uci set network.globals.packet_steering='1'
+
+# === TẮT IPv6 ===
+uci set network.lan.ipv6='0'
+uci set network.wan.ipv6='0'
+uci set network.globals.ula_prefix=''
+uci set network.lan.delegate='0'
+uci set network.wan.delegate='0'
+uci set network.wan6.auto='0' 2>/dev/null
+
+uci commit network
+
+# === Tắt DHCPv6 / RA ===
+uci set dhcp.lan.dhcpv6='disabled'
+uci set dhcp.lan.ra='disabled'
+uci set dhcp.odhcpd.maindhcp='0' 2>/dev/null
+uci commit dhcp
+
+# === System ===
+uci set system.@system[0].zonename='Asia/Ho_Chi_Minh'
+uci set system.@system[0].timezone='ICT-7'
+uci set system.@system[0].hostname='NewifiD2'
+uci commit system
+
+# ============================================================
+# LED - Dùng netdev trigger (v25.12.5+)
+# ============================================================
+
+# Đèn WiFi 2.4GHz → sáng/nhấp nháy khi có traffic
+uci set system.led_wlan2g='led'
+uci set system.led_wlan2g.name='WLAN 2.4GHz'
+uci set system.led_wlan2g.sysfs='blue:wlan2g'
+uci set system.led_wlan2g.trigger='netdev'
+uci set system.led_wlan2g.dev='wlan0'
+uci set system.led_wlan2g.mode='link tx rx'
+
+# Đèn WiFi 5GHz → sáng/nhấp nháy khi có traffic
+uci set system.led_wlan5g='led'
+uci set system.led_wlan5g.name='WLAN 5GHz'
+uci set system.led_wlan5g.sysfs='blue:wlan5g'
+uci set system.led_wlan5g.trigger='netdev'
+uci set system.led_wlan5g.dev='wlan1'
+uci set system.led_wlan5g.mode='link tx rx'
+
+# Đèn Internet (blue) → sáng khi WAN có kết nối + nhấp nháy khi có traffic
+uci set system.led_internet='led'
+uci set system.led_internet.name='Internet'
+uci set system.led_internet.sysfs='blue:internet'
+uci set system.led_internet.trigger='netdev'
+uci set system.led_internet.dev='wan'
+uci set system.led_internet.mode='link tx rx'
+
+# Đèn Power (amber tắt, blue sáng = hoạt động bình thường)
+uci set system.led_power='led'
+uci set system.led_power.name='Power'
+uci set system.led_power.sysfs='blue:power'
+uci set system.led_power.trigger='default-on'
+
+uci commit system
+
+# ============================================================
+# CẤU HÌNH WIFI - Tối ưu ổn định + giảm nhiệt
+# ============================================================
+
+# Khởi tạo cấu hình wireless nếu chưa có (Dùng 'wifi config' chuẩn của OpenWrt)
+if [ ! -s /etc/config/wireless ] || ! grep -q "wifi-device" /etc/config/wireless; then
+    wifi config 2>/dev/null || true
+    sleep 1
+fi
+
+# Tự động nhận diện radio 2.4GHz và 5GHz
+RADIO_2G=""
+RADIO_5G=""
+
+for radio in $(uci show wireless 2>/dev/null | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
+    band=$(uci -q get wireless.${radio}.band)
+    if [ "$band" = "2g" ]; then
+        RADIO_2G="$radio"
+    elif [ "$band" = "5g" ]; then
+        RADIO_5G="$radio"
+    fi
+done
+
+# Fallback nếu chưa nhận diện được band
+[ -z "$RADIO_2G" ] && [ -n "$RADIO_5G" ] && [ "$RADIO_5G" = "radio0" ] && RADIO_2G="radio1"
+[ -z "$RADIO_2G" ] && [ -n "$RADIO_5G" ] && [ "$RADIO_5G" = "radio1" ] && RADIO_2G="radio0"
+[ -z "$RADIO_2G" ] && RADIO_2G="radio0"
+[ -z "$RADIO_5G" ] && RADIO_5G="radio1"
+
+# === Cấu hình Radio 2.4GHz (Max công suất + HT20 xuyên tường cực mạnh) ===
+if [ -n "$RADIO_2G" ]; then
+    uci set wireless.${RADIO_2G}.disabled='0'
+    uci set wireless.${RADIO_2G}.channel='6'
+    uci set wireless.${RADIO_2G}.htmode='HT20'
+    uci set wireless.${RADIO_2G}.country='US'
+    uci set wireless.${RADIO_2G}.txpower='20'
+    # Tắt quét kênh nền: MT7603 chỉ có 1 radio chain, khi quét sẽ tắt AP → iPhone mất kết nối
+    uci set wireless.${RADIO_2G}.noscan='1'
+fi
+
+# === Cấu hình Radio 5GHz (Tốc độ cao + Max công suất) ===
+if [ -n "$RADIO_5G" ]; then
+    uci set wireless.${RADIO_5G}.disabled='0'
+    uci set wireless.${RADIO_5G}.channel='36'
+    uci set wireless.${RADIO_5G}.htmode='VHT80'
+    uci set wireless.${RADIO_5G}.country='US'
+    uci set wireless.${RADIO_5G}.txpower='23'
+fi
+
+# Xóa toàn bộ các wifi-iface mặc định cũ (thường bị OpenWrt gán disabled=1)
+for iface in $(uci show wireless 2>/dev/null | grep "=wifi-iface" | cut -d'.' -f2 | cut -d'=' -f1); do
+    uci -q delete wireless.${iface}
+done
+
+# === Tạo mới Interface WiFi 2.4GHz (Lucky 2.4Ghz) ===
+if [ -n "$RADIO_2G" ]; then
+    uci set wireless.default_radio0=wifi-iface
+    uci set wireless.default_radio0.device="${RADIO_2G}"
+    uci set wireless.default_radio0.network='lan'
+    uci set wireless.default_radio0.mode='ap'
+    uci set wireless.default_radio0.ssid='Lucky 2.4Ghz'
+    uci set wireless.default_radio0.encryption='psk2'
+    uci set wireless.default_radio0.key='__WIFI_KEY__'
+    uci set wireless.default_radio0.disabled='0'
+    uci set wireless.default_radio0.ap_isolate='0'
+    uci set wireless.default_radio0.ieee80211k='0'
+    uci set wireless.default_radio0.bss_transition='0'
+    uci set wireless.default_radio0.ieee80211r='0'
+    uci set wireless.default_radio0.disassoc_low_ack='0'
+    uci set wireless.default_radio0.skip_inactivity_poll='0'
+    uci set wireless.default_radio0.ap_max_inactivity='86400'
+    uci set wireless.default_radio0.max_inactivity='86400'
+    uci set wireless.default_radio0.wpa_group_rekey='86400'
+    uci set wireless.default_radio0.uapsd_advertisement_enabled='1'
+    uci set wireless.default_radio0.wmm='1'
+    # DTIM=3 cho iPhone power-save có đủ thời gian thức dậy nhận frame
+    uci set wireless.default_radio0.dtim_period='3'
+fi
+
+# === Tạo mới Interface WiFi 5GHz (Lucky) ===
+if [ -n "$RADIO_5G" ]; then
+    uci set wireless.default_radio1=wifi-iface
+    uci set wireless.default_radio1.device="${RADIO_5G}"
+    uci set wireless.default_radio1.network='lan'
+    uci set wireless.default_radio1.mode='ap'
+    uci set wireless.default_radio1.ssid='Lucky'
+    uci set wireless.default_radio1.encryption='psk2'
+    uci set wireless.default_radio1.key='__WIFI_KEY__'
+    uci set wireless.default_radio1.disabled='0'
+    uci set wireless.default_radio1.ap_isolate='0'
+    uci set wireless.default_radio1.ieee80211k='0'
+    uci set wireless.default_radio1.bss_transition='0'
+    uci set wireless.default_radio1.ieee80211r='0'
+    uci set wireless.default_radio1.disassoc_low_ack='0'
+    uci set wireless.default_radio1.skip_inactivity_poll='0'
+    uci set wireless.default_radio1.ap_max_inactivity='86400'
+    uci set wireless.default_radio1.max_inactivity='86400'
+    uci set wireless.default_radio1.wpa_group_rekey='86400'
+    uci set wireless.default_radio1.uapsd_advertisement_enabled='1'
+    uci set wireless.default_radio1.wmm='1'
+    uci set wireless.default_radio1.dtim_period='3'
+fi
+
+uci commit wireless
+wifi reload 2>/dev/null || true
+wifi up 2>/dev/null || true
+
+# ============================================================
+# GIẢM NHIỆT - IRQ balancing + kernel tuning
+# ============================================================
+
+# Phân tải WiFi IRQ: Core 0 → 2.4G, Core 1 → 5G
+mkdir -p /etc/hotplug.d/iface
+cat > /etc/hotplug.d/iface/99-wifi-irq-balance << 'IRQEOF'
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+sleep 3
+for irq in $(grep "mt7603" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' '); do
+    echo 1 > /proc/irq/$irq/smp_affinity 2>/dev/null
+done
+for irq in $(grep "mt76x2" /proc/interrupts 2>/dev/null | awk -F: '{print $1}' | tr -d ' '); do
+    echo 2 > /proc/irq/$irq/smp_affinity 2>/dev/null
+done
+IRQEOF
+chmod +x /etc/hotplug.d/iface/99-wifi-irq-balance
+
+# Kernel tuning giảm nhiệt + ổn định WiFi khi tải nặng
+cat > /etc/sysctl.d/99-reduce-heat.conf << 'SYSEOF'
+# Tăng netdev_budget và backlog để tránh nghẽn hàng đợi/drop frame khi tải nặng
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 4000
+net.core.netdev_max_backlog = 5000
+net.core.somaxconn = 4096
+# Conntrack vừa đủ (không cần nhiều cho home)
+net.netfilter.nf_conntrack_max = 16384
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+net.netfilter.nf_conntrack_udp_timeout = 30
+# VM tuning: Giữ 8MB RAM dự trữ cho buffer mạng và giải phóng cache chủ động (chống tràn RAM khi 20+ client tải nặng)
+vm.min_free_kbytes = 8192
+vm.vfs_cache_pressure = 150
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
+# TCP BBR + fq_codel: Triệt tiêu hiện tượng nghẽn lag (Bufferbloat), hạ ping chơi game khi có người tải nặng
+net.core.default_qdisc = fq_codel
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_slow_start_after_idle = 0
+# Mở rộng bảng ARP cho thiết bị iOS xoay MAC ngẫu nhiên
+net.ipv4.neigh.default.gc_thresh1 = 1024
+net.ipv4.neigh.default.gc_thresh2 = 2048
+net.ipv4.neigh.default.gc_thresh3 = 4096
+SYSEOF
+# ============================================================
+# ADGUARD HOME - Chạy TRỰC TIẾP trên port 53 (full power)
+# dnsmasq chỉ làm DHCP, không làm DNS
+# ============================================================
+
+# === Tắt DNS của dnsmasq (chỉ giữ DHCP) ===
+uci set dhcp.@dnsmasq[0].port='0'
+uci set dhcp.@dnsmasq[0].noresolv='1'
+uci del_list dhcp.@dnsmasq[0].server='127.0.0.1#5353' 2>/dev/null
+# DHCP trả về router IP làm DNS server → client query port 53 → AGH xử lý
+uci -q delete dhcp.lan.dhcp_option
+uci add_list dhcp.lan.dhcp_option='6,192.168.1.1'
+uci commit dhcp
+
+# === Bắt buộc toàn bộ thiết bị phải dùng AdGuard Home (Chống bypass DoT/Private DNS) ===
+uci -q delete firewall.dns_redirect
+uci set firewall.dns_redirect=redirect
+uci set firewall.dns_redirect.name='Intercept-DNS'
+uci set firewall.dns_redirect.src='lan'
+uci set firewall.dns_redirect.proto='tcp udp'
+uci set firewall.dns_redirect.src_dport='53'
+uci set firewall.dns_redirect.dest_port='53'
+uci set firewall.dns_redirect.target='DNAT'
+
+uci -q delete firewall.block_dot
+uci set firewall.block_dot=rule
+uci set firewall.block_dot.name='Block-DoT-Port853'
+uci set firewall.block_dot.src='lan'
+uci set firewall.block_dot.dest='wan'
+uci set firewall.block_dot.proto='tcp udp'
+uci set firewall.block_dot.dest_port='853'
+uci set firewall.block_dot.target='REJECT'
+uci commit firewall
+
+# Enable và cấu hình AdGuard Home
+if [ -f /etc/init.d/adguardhome ]; then
+    /etc/init.d/adguardhome enable
+
+    # Cấu hình UCI cho AdGuard Home service (Giới hạn RAM và tối ưu Garbage Collection)
+    uci set adguardhome.config=adguardhome
+    uci set adguardhome.config.enabled='1'
+    uci set adguardhome.config.gc='50'
+    uci set adguardhome.config.memlimit='256'
+    uci set adguardhome.config.config_file='/etc/adguardhome/adguardhome.yaml'
+    uci set adguardhome.config.work_dir='/var/lib/adguardhome'
+    uci commit adguardhome
+
+    # Ghi config (luôn ghi đè để đảm bảo custom rules/filters có hiệu lực)
+    # File PHẢI là lowercase adguardhome.yaml (init script mặc định đọc file này)
+    mkdir -p /etc/adguardhome
+    mkdir -p /var/lib/adguardhome
+    cat > /etc/adguardhome/adguardhome.yaml << 'ADGEOF'
+bind_host: 0.0.0.0
+bind_port: 3000
+users: []
+auth_attempts: 5
+block_auth_min: 15
+http_proxy: ""
+language: vi
+theme: auto
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  upstream_dns:
+    - 8.8.8.8
+    - 8.8.4.4
+    - 1.1.1.1
+    - 1.0.0.1
+    - https://dns.google/dns-query
+    - https://dns.cloudflare.com/dns-query
+  fallback_dns:
+    - 8.8.8.8
+    - 1.1.1.1
+  bootstrap_dns:
+    - 8.8.8.8
+    - 1.1.1.1
+  upstream_mode: parallel
+  all_servers: false
+  fastest_addr: true
+  cache_size: 4194304
+  cache_ttl_min: 0
+  cache_ttl_max: 3600
+  cache_optimistic: false
+  ratelimit: 0
+  ratelimit_subnet_len_ipv4: 32
+  ratelimit_whitelist:
+    - 127.0.0.1
+    - 192.168.1.1
+  blocked_hosts:
+    - version.bind
+    - id.server
+    - hostname.bind
+# Giới hạn querylog và stats lưu trong RAM (24h, tối đa 1000 bản ghi) để không bao giờ bị tràn RAM khi nhiều thiết bị
+querylog:
+  enabled: true
+  file_enabled: true
+  interval: 24h
+  size_memory: 1000
+  ignored: []
+stats:
+  enabled: true
+  interval: 24h
+  ignored: []
+filtering:
+  protection_enabled: true
+  filtering_enabled: true
+  parental_enabled: false
+  safesearch:
+    enabled: false
+  safebrowsing_enabled: false
+  blocked_services:
+    schedule:
+      time_zone: Asia/Ho_Chi_Minh
+    ids:
+      - roblox
+  rewrites: []
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
+    name: AdAway Default Blocklist
+    id: 1
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_3.txt
+    name: Peter Lowe's Blocklist
+    id: 2
+  - enabled: true
+    url: https://abpvn.com/filter/abpvn-a9cmB9.txt?adguard
+    name: ABPVN - Chan quang cao Viet Nam
+    id: 3
+user_rules:
+  - '||freefiremobile.com^'
+  - '||ff.garena.com^'
+  - '||cdo.ff.garena.com^'
+  - '||dl.dir.freefiremobile.com^'
+  - '||freefiremobile-a.akamaihd.net^'
+  - '||vn.freefiremobile.com^'
+  - '||reward.ff.garena.com^'
+  - '||metrika.yandex.ru^'
+  - '||appmetrica.yandex.ru^'
+  - '||notify.bugsnag.com^'
+  - '||sessions.bugsnag.com^'
+  - '||api.bugsnag.com^'
+  - '||app.bugsnag.com^'
+  - '||udc.yahoo.com^'
+  - '||udcm.yahoo.com^'
+  - '||log.fc.yahoo.com^'
+  - '||adtech.yahooinc.com^'
+  - '||vlstorage.com^'
+  - '||i2.vlstorage.com^'
+  - '||quoracdn.net^'
+  - '||qph.cf2.quoracdn.net^'
+  - '||hbet.wtf^'
+  - '||man88.com^'
+  - '||mask.icloud.com^'
+  - '||mask-h2.icloud.com^'
+  - '||man88.lat^'
+  - '||lu88.com^'
+  - '||lu88.app^'
+  - '@@||tiktok.com^'
+  - '@@||tiktokv.com^'
+  - '@@||tiktokcdn.com^'
+  - '@@||byteoversea.com^'
+  - '@@||ibytedtos.com^'
+  - '@@||zalo.me^'
+  - '@@||zalocdn.net^'
+  - '@@||shopee.vn^'
+  - '@@||shp.ee^'
+  - '@@||apple.com^'
+  - '@@||captive.apple.com^'
+  - '@@||icloud.com^'
+  - '@@||mzstatic.com^'
+  - '@@||apple-dns.net^'
+  - '@@||aaplimg.com^'
+  - '@@||facebook.com^'
+  - '@@||fbcdn.net^'
+  - '@@||microsoft.com^'
+  - '@@||edgesuite.net^'
+  - '@@||akamai.net^'
+  - '@@||vlxx.phd^'
+  - '@@||vlcontent.com^'
+  - '@@||vlplayer.com^'
+  - '@@||vlstream.net^'
+  - '@@||qooglevideo.com^'
+  - '@@||adxcontent.com^'
+schema_version: 29
+ADGEOF
+
+    # Fix permissions (AGH chạy dưới user adguardhome trong jail)
+    chown -R adguardhome:adguardhome /etc/adguardhome 2>/dev/null
+    chown -R adguardhome:adguardhome /var/lib/adguardhome 2>/dev/null
+    # Xóa file CamelCase cũ nếu tồn tại
+    rm -f /etc/adguardhome/AdGuardHome.yaml 2>/dev/null
+
+    # === Hotplug: Đảm bảo AGH port 53 sau mỗi lần reboot/mất điện ===
+    cat > /etc/hotplug.d/iface/99-adguardhome << 'AGHEOF'
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "lan" ] || exit 0
+
+# Chỉ chạy 1 lần (tránh chạy lại khi cả lan và wan ifup cùng lúc)
+LOCKFILE="/tmp/agh-hotplug.lock"
+[ -f "$LOCKFILE" ] && exit 0
+touch "$LOCKFILE"
+
+sleep 2
+
+# Bước 1: Đảm bảo dnsmasq không chiếm port 53
+DNSMASQ_PORT=$(uci -q get dhcp.@dnsmasq[0].port)
+if [ "$DNSMASQ_PORT" != "0" ]; then
+    uci set dhcp.@dnsmasq[0].port='0'
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart
+    sleep 1
+fi
+
+# Bước 2: Khởi động hoặc kiểm tra AGH
+if [ -f /etc/init.d/adguardhome ]; then
+    /etc/init.d/adguardhome status >/dev/null 2>&1 || /etc/init.d/adguardhome start
+    sleep 3
+
+    # Bước 3: Kiểm tra AGH đã bind port 53 chưa
+    if netstat -tlnp 2>/dev/null | grep ":53 " | grep -qi "adguard"; then
+        logger -t "agh-hotplug" "OK: AdGuard Home on port 53 after $INTERFACE ifup"
+    else
+        # Thử restart lần nữa
+        /etc/init.d/adguardhome restart
+        sleep 4
+        if netstat -tlnp 2>/dev/null | grep ":53 " | grep -qi "adguard"; then
+            logger -t "agh-hotplug" "OK: AdGuard Home on port 53 after restart"
+        else
+            # AGH thất bại → khôi phục dnsmasq làm DNS để mạng không bao giờ bị mất
+            logger -t "agh-hotplug" "FALLBACK: AGH failed, restoring dnsmasq DNS"
+            uci set dhcp.@dnsmasq[0].port='53'
+            uci set dhcp.@dnsmasq[0].noresolv='0'
+            uci del_list dhcp.@dnsmasq[0].server='1.1.1.1' 2>/dev/null
+            uci add_list dhcp.@dnsmasq[0].server='1.1.1.1'
+            uci add_list dhcp.@dnsmasq[0].server='8.8.8.8'
+            uci commit dhcp
+            /etc/init.d/dnsmasq restart
+        fi
+    fi
+fi
+
+# Xoá lock sau 30s
+(sleep 30 && rm -f "$LOCKFILE") &
+AGHEOF
+    chmod +x /etc/hotplug.d/iface/99-adguardhome
+
+    # Khởi động AdGuard Home ngay lập tức
+    /etc/init.d/adguardhome start 2>/dev/null || true
+
+    logger -t "newifi-d2-setup" "AdGuard Home configured on port 53 (direct mode)"
+fi
+
+exit 0
+

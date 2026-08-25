@@ -1,0 +1,592 @@
+# ============================================================
+# Build OpenWrt Custom Firmware - D-Team Newifi D2 (MT7621)
+# WiFi Band Steering Fix + Optimized + PPPoE
+# ============================================================
+
+name: Build Newifi D2 Firmware
+
+on:
+  # Tự động build khi push tag
+  push:
+    tags:
+      - "v*"
+  # Cho phép chạy thủ công từ GitHub UI
+  workflow_dispatch:
+    inputs:
+      release_note:
+        description: "Ghi chú cho release (tuỳ chọn)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+# Chỉ cho phép 1 build chạy cùng lúc, huỷ build cũ nếu có
+concurrency:
+  group: build-newifi-d2
+  cancel-in-progress: true
+
+env:
+  DEVICE_PROFILE: d-team_newifi-d2
+  TARGET: ramips
+  SUBTARGET: mt7621
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: .config.newifi-d2
+  CUSTOM_FILES: files
+  TZ: Asia/Ho_Chi_Minh
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 5G
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      # ====================================================
+      # 1. CHUẨN BỊ MÔI TRƯỜNG (0.1 giây - Dọn rác ngầm)
+      # ====================================================
+      - name: Khởi tạo môi trường và dọn đĩa ngầm
+        run: |
+          # Dọn rác Android/.NET chạy ngầm trong nền (tăng lên 50GB trống mà không làm chậm workflow)
+          (sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/local/share/powershell "$AGENT_TOOLSDIRECTORY" >/dev/null 2>&1) &
+
+          echo "=== Dung lượng ổ đĩa khởi điểm ==="
+          df -hT /
+          echo ""
+          echo "=== Thông số RAM ==="
+          free -h
+
+      - name: Cài đặt build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler \
+            ecj fastjar flex gawk gettext gcc-multilib g++-multilib git gnutls-dev \
+            gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch \
+            pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion \
+            swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+
+      # ====================================================
+      # 2. CHECKOUT SOURCE CODE
+      # ====================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ====================================================
+      # ====================================================
+      # 3. CACHE (Tải gói và ccache an toàn, tránh lỗi stale toolchain)
+      # ====================================================
+      - name: Cache download
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-ramips-mt7621-${{ hashFiles('feeds.conf.default') }}
+          restore-keys: |
+            dl-ramips-mt7621-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            ~/.ccache
+          key: ccache-ramips-mt7621-${{ github.sha }}
+          restore-keys: |
+            ccache-ramips-mt7621-
+
+      # ====================================================
+      # 4. CẬP NHẬT FEEDS
+      # ====================================================
+      - name: Cập nhật feeds
+        run: |
+          ./scripts/feeds update -a 2>&1 | tail -20
+          ./scripts/feeds install -a 2>&1 | tail -20
+
+      # ====================================================
+      # 4. ÁP DỤNG CONFIG + CUSTOM FILES
+      # ====================================================
+      - name: Áp dụng cấu hình Newifi D2
+        run: |
+          echo "=== Áp dụng .config.newifi-d2 ==="
+          cp "$CONFIG_FILE" .config
+
+          # Expand config với defaults
+          make defconfig
+
+          echo ""
+          echo "=== Kiểm tra config ==="
+          grep -E "CONFIG_TARGET_DEVICE.*newifi" .config || true
+          grep -E "CONFIG_PACKAGE_wpad" .config || true
+          grep -E "CONFIG_PACKAGE_usteer" .config || true
+          grep -E "CONFIG_PACKAGE_ppp" .config | head -5 || true
+          grep -E "CONFIG_PACKAGE_kmod-mt76" .config || true
+          grep -E "CONFIG_PACKAGE_luci-proto-ppp" .config || true
+          grep -E "CONFIG_PACKAGE_kmod-usb-storage" .config || true
+          grep -E "CONFIG_PACKAGE_block-mount" .config || true
+
+          echo ""
+          echo "=== Kiểm tra custom files ==="
+          if [ -d "$CUSTOM_FILES" ]; then
+            find "$CUSTOM_FILES" -type f
+          fi
+
+          echo ""
+          echo "=== Kiểm tra network config (192.168.1.1) ==="
+          if [ -f "$CUSTOM_FILES/etc/config/network" ]; then
+            grep -E "ipaddr|proto" "$CUSTOM_FILES/etc/config/network" || true
+          fi
+
+          echo ""
+          echo "=== Kiểm tra uci-defaults script (WiFi config) ==="
+          if [ -f "$CUSTOM_FILES/etc/uci-defaults/99-newifi-d2-setup" ]; then
+            grep -E "ssid|encryption|disabled|htmode|country|usteer|wifi" "$CUSTOM_FILES/etc/uci-defaults/99-newifi-d2-setup" | grep -v '__WIFI_KEY__\|__PPPOE' | head -20 || true
+          fi
+
+      - name: Xác nhận cấu hình quan trọng
+        run: |
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║     KIỂM TRA CẤU HÌNH TRƯỚC KHI BUILD          ║"
+          echo "╚══════════════════════════════════════════════════╝"
+
+          ERRORS=0
+
+          # Kiểm tra target device
+          if grep -q "CONFIG_TARGET_ramips_mt7621_DEVICE_d-team_newifi-d2=y" .config; then
+            echo "✅ Target device: D-Team Newifi D2"
+          else
+            echo "❌ SAI target device!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra wpad-mbedtls (band steering fix)
+          if grep -q "CONFIG_PACKAGE_wpad-mbedtls=y" .config; then
+            echo "✅ wpad-mbedtls: Enabled (802.11k/v/r support)"
+          else
+            echo "❌ wpad-mbedtls CHƯA được bật!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra WiFi drivers
+          if grep -q "CONFIG_PACKAGE_kmod-mt7603=y" .config && \
+             grep -q "CONFIG_PACKAGE_kmod-mt76x2=y" .config; then
+            echo "✅ WiFi drivers: MT7603 (2.4G) + MT76x2 (5G)"
+          else
+            echo "❌ Thiếu WiFi driver!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra PPPoE
+          if grep -q "CONFIG_PACKAGE_ppp=y" .config && \
+             grep -q "CONFIG_PACKAGE_ppp-mod-pppoe=y" .config; then
+            echo "✅ PPPoE: Enabled"
+          else
+            echo "⚠️  PPPoE chưa bật (cần cho ISP Việt Nam)"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra LuCI
+          if grep -q "CONFIG_PACKAGE_luci=y" .config; then
+            echo "✅ LuCI Web UI: Enabled"
+          else
+            echo "❌ LuCI CHƯA được bật!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra usteer
+          if grep -q "CONFIG_PACKAGE_usteer=y" .config; then
+            echo "✅ usteer: Enabled (Band Steering)"
+          else
+            echo "⚠️  usteer chưa bật"
+          fi
+
+          # Kiểm tra USB Storage (tuỳ chọn)
+          if grep -q "CONFIG_PACKAGE_kmod-usb-storage=y" .config; then
+            echo "✅ USB Storage: Enabled"
+          else
+            echo "ℹ️  USB Storage: Không cài (đã loại bỏ để giảm dung lượng)"  
+          fi
+
+          # Kiểm tra network config (192.168.1.1)
+          if [ -f "files/etc/uci-defaults/99-newifi-d2-setup" ] && \
+             grep -q "192.168.1.1" files/etc/uci-defaults/99-newifi-d2-setup; then
+            echo "✅ LAN IP: 192.168.1.1 (cấu hình trong uci-defaults)"
+          else
+            echo "❌ Không tìm thấy cấu hình LAN 192.168.1.1!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra uci-defaults script (WiFi config)
+          if [ -f "files/etc/uci-defaults/99-newifi-d2-setup" ]; then
+            if grep -q "ssid.*Lucky" files/etc/uci-defaults/99-newifi-d2-setup && \
+               grep -q "wifi reload" files/etc/uci-defaults/99-newifi-d2-setup && \
+               grep -q "wifi up" files/etc/uci-defaults/99-newifi-d2-setup; then
+              echo "✅ WiFi Setup Script: OK (SSID=Lucky, auto-enable, auto-detect radios)"
+            else
+              echo "⚠️  WiFi setup script có thể thiếu cấu hình"
+            fi
+          else
+            echo "❌ Thiếu uci-defaults script cho WiFi!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra firewall
+          if grep -q "CONFIG_PACKAGE_firewall4=y" .config; then
+            echo "✅ Firewall: Enabled"
+          else
+            echo "❌ Firewall CHƯA được bật!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra dnsmasq
+          if grep -q "CONFIG_PACKAGE_dnsmasq" .config; then
+            echo "✅ DHCP/DNS: Enabled"
+          else
+            echo "❌ DHCP/DNS CHƯA được bật!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Kiểm tra dropbear (SSH)
+          if grep -q "CONFIG_PACKAGE_dropbear=y" .config; then
+            echo "✅ SSH (dropbear): Enabled"
+          else
+            echo "❌ SSH CHƯA được bật!"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          echo ""
+          if [ $ERRORS -gt 0 ]; then
+            echo "❌❌❌ CÓ $ERRORS LỖI CẤU HÌNH! DỪNG BUILD! ❌❌❌"
+            exit 1
+          else
+            echo "✅✅✅ TẤT CẢ CẤU HÌNH ĐỀU OK! TIẾN HÀNH BUILD... ✅✅✅"
+          fi
+
+      # ====================================================
+      # 5. INJECT SECRETS (thay thế placeholder bằng giá trị thật từ GitHub Secrets)
+      # ====================================================
+      - name: Inject secrets vào custom files
+        env:
+          PPPOE_USERNAME: ${{ secrets.PPPOE_USERNAME }}
+          PPPOE_PASSWORD: ${{ secrets.PPPOE_PASSWORD }}
+          WIFI_KEY: ${{ secrets.WIFI_KEY }}
+        run: |
+          SETUP_FILE="files/etc/uci-defaults/99-newifi-d2-setup"
+          if [ -f "$SETUP_FILE" ]; then
+            echo "🔐 Injecting secrets vào setup script..."
+            sed -i "s|__PPPOE_USERNAME__|${PPPOE_USERNAME}|g" "$SETUP_FILE"
+            sed -i "s|__PPPOE_PASSWORD__|${PPPOE_PASSWORD}|g" "$SETUP_FILE"
+            sed -i "s|__WIFI_KEY__|${WIFI_KEY}|g" "$SETUP_FILE"
+
+            # Kiểm tra không còn placeholder nào sót
+            if grep -q '__PPPOE_USERNAME__\|__PPPOE_PASSWORD__\|__WIFI_KEY__' "$SETUP_FILE"; then
+              echo "❌ LỖI: Còn placeholder chưa được thay thế! Kiểm tra lại GitHub Secrets."
+              echo "   Vào Settings → Secrets and variables → Actions → New repository secret"
+              echo "   Tạo 3 secrets: PPPOE_USERNAME, PPPOE_PASSWORD, WIFI_KEY"
+              exit 1
+            fi
+            echo "✅ Tất cả secrets đã được inject thành công!"
+          else
+            echo "⚠️ Không tìm thấy file setup script"
+          fi
+
+      # ====================================================
+      # 6. TẢI SOURCE PACKAGES
+      # ====================================================
+      - name: Tải source packages
+        run: |
+          # Xoá go-mod-cache cũ để tránh lỗi stale Go dependencies
+          rm -rf dl/go-mod-cache
+
+          make download -j$(nproc) || make download -j1 V=s
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      # ====================================================
+      # 6. BUILD FIRMWARE
+      # ====================================================
+      - name: Compile firmware
+        id: compile
+        run: |
+          echo "=== Bắt đầu compile ==="
+          echo "CPU cores: $(nproc)"
+          echo "RAM: $(free -h | grep Mem | awk '{print $2}')"
+          echo "Disk: $(df -h . | tail -1 | awk '{print $4}') free"
+
+          # Setup ccache
+          export PATH="/usr/lib/ccache:$PATH"
+          mkdir -p "$CCACHE_DIR" ~/.ccache
+          ccache -M 5G 2>/dev/null || true
+          ccache -z 2>/dev/null || true
+
+          echo ""
+
+          # Build với multi-thread (nproc + 1 để tận dụng 100% CPU khi có I/O wait)
+          set -o pipefail
+          BUILD_THREADS=$(($(nproc) + 1))
+          echo "Compiling with $BUILD_THREADS parallel threads..."
+          if ! make -j"$BUILD_THREADS" 2>&1 | tee build.log; then
+            echo "::warning::Multi-core make failed, falling back to single-core verbose build to complete/diagnose..."
+            make -j1 V=s 2>&1 | tee build-verbose.log
+          fi
+
+          echo "status=success" >> $GITHUB_OUTPUT
+
+          # Hiển thị ccache stats
+          echo ""
+          echo "=== ccache stats ==="
+          ccache -s 2>/dev/null || true
+
+          echo ""
+          echo "=== Build hoàn tất ==="
+          ls -lh bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/ 2>/dev/null || true
+
+      # ====================================================
+      # 7. KIỂM TRA KẾT QUẢ BUILD
+      # ====================================================
+      - name: Kiểm tra firmware output
+        id: check
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          FW_DIR="bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}"
+
+          if [ ! -d "$FW_DIR" ]; then
+            echo "❌ Thư mục firmware không tồn tại!"
+            exit 1
+          fi
+
+          # Tìm file sysupgrade
+          SYSUPGRADE=$(find "$FW_DIR" -name "*newifi-d2*sysupgrade*" -not -name "*.sha256" | head -1)
+          FACTORY=$(find "$FW_DIR" -name "*newifi-d2*factory*" -not -name "*.sha256" | head -1)
+
+          if [ -z "$SYSUPGRADE" ]; then
+            echo "❌ Không tìm thấy file sysupgrade!"
+            ls -la "$FW_DIR"/
+            exit 1
+          fi
+
+          echo "✅ Firmware tìm thấy!"
+          echo ""
+
+          # Show file info
+          echo "=== Sysupgrade ==="
+          ls -lh "$SYSUPGRADE"
+          SYSUPGRADE_SIZE=$(stat -c%s "$SYSUPGRADE")
+          echo "Size: $SYSUPGRADE_SIZE bytes"
+
+          # Kiểm tra kích thước (max 32MB = 33554432 bytes, firmware partition ~32448KB = 33226752 bytes)
+          MAX_SIZE=33226752
+          if [ "$SYSUPGRADE_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "❌ FIRMWARE QUÁ LỚN! ($SYSUPGRADE_SIZE > $MAX_SIZE bytes)"
+            echo "Router chỉ có ~32MB flash, firmware sẽ không vừa!"
+            exit 1
+          else
+            echo "✅ Kích thước OK ($(( SYSUPGRADE_SIZE / 1024 / 1024 ))MB / $(( MAX_SIZE / 1024 / 1024 ))MB max)"
+          fi
+
+          # Generate SHA256
+          echo ""
+          echo "=== SHA256 Checksums ==="
+          (cd "$FW_DIR" && sha256sum *newifi-d2* 2>/dev/null) | tee checksums.txt
+
+          # Lưu paths cho release step
+          echo "firmware_dir=$FW_DIR" >> $GITHUB_OUTPUT
+          echo "sysupgrade=$SYSUPGRADE" >> $GITHUB_OUTPUT
+          if [ -n "$FACTORY" ]; then
+            echo "factory=$FACTORY" >> $GITHUB_OUTPUT
+          fi
+
+      # ====================================================
+      # 8. CHUẨN BỊ RELEASE FILES
+      # ====================================================
+      - name: Chuẩn bị release files
+        id: prepare
+        if: steps.check.outputs.sysupgrade != ''
+        run: |
+          mkdir -p release
+          FW_DIR="${{ steps.check.outputs.firmware_dir }}"
+
+          # Copy firmware files
+          cp "$FW_DIR"/*newifi-d2* release/ 2>/dev/null || true
+
+          # Copy buildinfo
+          cp "$FW_DIR"/*.buildinfo release/ 2>/dev/null || true
+          cp "$FW_DIR"/*.manifest release/ 2>/dev/null || true
+          cp "$FW_DIR"/sha256sums release/ 2>/dev/null || true
+
+          # Copy config để tham khảo
+          cp .config release/config.buildinfo 2>/dev/null || true
+
+          # Tạo build info
+          cat > release/BUILD_INFO.txt << EOF
+          ╔══════════════════════════════════════════════════╗
+          ║    OpenWrt Custom - D-Team Newifi D2 (MT7621)   ║
+          ╚══════════════════════════════════════════════════╝
+
+          Build Date    : $(date '+%Y-%m-%d %H:%M:%S %Z')
+          Git Commit    : $(git rev-parse --short HEAD 2>/dev/null || echo 'N/A')
+          Git Tag       : $(git describe --tags 2>/dev/null || echo 'N/A')
+
+          === FEATURES ===
+          ✅ WiFi Band Steering (802.11k/v/r + usteer)
+          ✅ PPPoE Support
+          ✅ Hardware Flow Offloading
+          ✅ Packet Steering (Dual-Core)
+          ✅ LuCI Web Interface (192.168.1.1)
+          ✅ TCP BBR Congestion Control
+          ✅ USB 3.0 Storage (EXT4/FAT)
+
+          === WiFi ===
+          • SSID: Lucky (WPA2-PSK)
+          • wpad-mbedtls (full 802.11k/v/r)
+          • usteer (auto band steering)
+          • 2.4GHz: HT40 (MT7603)
+          • 5GHz: VHT80 (MT76x2)
+          • Country: US
+          • Auto-enabled on boot
+
+          === ĐÃ TẮT/LOẠI BỎ ===
+          ✗ IPv6 (disabled, not removed)
+          ✗ Telephony / Video feeds
+          ✗ VPN (OpenVPN, WireGuard)
+          ✗ Debug tools
+          ✗ UPnP / Samba / DDNS
+
+          === FLASH HƯỚNG DẪN ===
+          1. Breed Bootloader: Giữ Reset + cắm nguồn → 192.168.1.1
+          2. OpenWrt hiện tại: System → Flash Firmware
+          3. Sử dụng file: *-sysupgrade.bin
+          EOF
+
+          echo "=== Release files ==="
+          ls -lh release/
+
+          # Đếm files
+          FILE_COUNT=$(ls release/*newifi-d2* 2>/dev/null | wc -l)
+          echo "firmware_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+      # ====================================================
+      # 9. TẠO TAG (nếu chạy từ workflow_dispatch)
+      # ====================================================
+      - name: Tạo version tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v$(date '+%Y%m%d-%H%M')"
+            git tag "$TAG"
+            git push origin "$TAG" || echo "Tag push skipped (may already exist)"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Tag: $TAG"
+
+      # ====================================================
+      # 10. TẠO GITHUB RELEASE
+      # ====================================================
+      - name: Tạo GitHub Release
+        if: steps.check.outputs.sysupgrade != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "🛜 Newifi D2 Firmware ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## 🛜 OpenWrt Custom Build - D-Team Newifi D2 (MT7621)
+
+            **Build:** ${{ steps.tag.outputs.tag }} | **Date:** ${{ github.event.repository.updated_at }}
+
+            ### ✅ Tính năng chính
+            | Feature | Status |
+            |:---|:---|
+            | WiFi Band Steering (2.4G ↔ 5G) | ✅ Fixed (802.11k/v/r + usteer) |
+            | PPPoE | ✅ Enabled |
+            | Hardware Flow Offloading | ✅ Enabled |
+            | LuCI Web Interface | ✅ `192.168.1.1` |
+            | AdGuard Home | ✅ Enabled (DNS Port 53 + Web UI `:3000`) |
+            | Package Manager | ✅ `apk` |
+            | TCP BBR | ✅ Enabled |
+            | IPv6 | 🔴 Disabled |
+
+            ### 📶 WiFi mặc định
+            | Setting | Value |
+            |:---|:---|
+            | SSID 5GHz | `Lucky` |
+            | SSID 2.4GHz | `Lucky 2.4Ghz` |
+            | Password | *(Được bảo mật qua GitHub Secrets)* |
+            | Security | WPA2-PSK |
+            | 2.4GHz Width | HT20 (ổn định) |
+            | 5GHz Width | VHT80 (max tốc độ) |
+            | Country | US |
+            | Roaming | ✅ 802.11k/v |
+
+            ### 📥 Hướng dẫn Flash
+            1. Tải file `*-sysupgrade.bin`
+            2. **Breed Bootloader:** Giữ nút Reset + cắm nguồn → Truy cập `192.168.1.1` → Upload firmware
+            3. **Đang chạy OpenWrt:** System → Flash Firmware → Upload file
+
+            ### ⚠️ Lưu ý
+            - Backup config trước khi flash: System → Backup/Flash Firmware → Generate archive
+            - LAN IP: `192.168.1.1` (không đổi)
+            - WiFi tự bật sau khi flash, SSID: `Lucky`
+            - Cấu hình PPPoE: Network → Interfaces → WAN → Edit
+            - IPv6 đã bị tắt (có thể bật lại trong LuCI nếu cần)
+
+            ${{ github.event.inputs.release_note }}
+          files: |
+            release/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ====================================================
+      # 11. THÔNG BÁO KẾT QUẢ
+      # ====================================================
+      - name: Tổng kết build
+        if: always()
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║              KẾT QUẢ BUILD                      ║"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo ""
+          if [ -f release/BUILD_INFO.txt ]; then
+            echo "✅ BUILD THÀNH CÔNG!"
+            echo ""
+            echo "Firmware files:"
+            ls -lh release/*newifi-d2* 2>/dev/null || echo "  (none)"
+            echo ""
+            echo "Release tag: ${{ steps.tag.outputs.tag }}"
+          else
+            echo "❌ BUILD THẤT BẠI!"
+            echo ""
+            echo "Kiểm tra logs để tìm lỗi."
+            if [ -f build-verbose.log ]; then
+              echo ""
+              echo "=== Last 50 lines of build log ==="
+              tail -50 build-verbose.log
+            fi
+          fi
+
+      - name: Upload build log nếu lỗi
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build.log
+            build-verbose.log
+          retention-days: 7
