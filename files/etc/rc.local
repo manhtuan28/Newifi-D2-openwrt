@@ -1,0 +1,7 @@
+# Put your custom commands here that should be executed once
+# the system init finished. By default this file does nothing.
+
+# Đảm bảo AdGuard Home chạy trên port 53 sau boot
+/etc/init.d/adguardhome status >/dev/null 2>&1 || /etc/init.d/adguardhome restart
+
+exit 0

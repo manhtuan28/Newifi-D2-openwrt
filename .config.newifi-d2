@@ -1,0 +1,160 @@
+# ============================================================
+# OpenWrt Custom Config for D-Team Newifi D2 (MT7621)
+# Minimal: WiFi ổn định + 802.11k/v + giảm nhiệt
+# ============================================================
+
+# === Target Platform ===
+CONFIG_TARGET_ramips=y
+CONFIG_TARGET_ramips_mt7621=y
+CONFIG_TARGET_ramips_mt7621_DEVICE_d-team_newifi-d2=y
+
+# === Build Options ===
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+
+# === Image Format ===
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+# CONFIG_TARGET_ROOTFS_INITRAMFS is not set
+# CONFIG_TARGET_ROOTFS_EXT4FS is not set
+
+# ============================================================
+# KERNEL (giữ mặc định, chỉ tắt debug)
+# ============================================================
+
+# CONFIG_KERNEL_DEBUG_INFO is not set
+# CONFIG_KERNEL_DEBUG_KERNEL is not set
+
+# ============================================================
+# NETWORKING (mặc định)
+# ============================================================
+
+# --- Firewall ---
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_nftables=y
+
+# --- DHCP/DNS (bản thường, không cần full) ---
+CONFIG_PACKAGE_dnsmasq=y
+# CONFIG_PACKAGE_dnsmasq-full is not set
+
+# --- PPPoE (có sẵn, người dùng tự chuyển trong LuCI nếu cần) ---
+CONFIG_PACKAGE_ppp=y
+CONFIG_PACKAGE_ppp-mod-pppoe=y
+CONFIG_PACKAGE_kmod-pppoe=y
+CONFIG_PACKAGE_kmod-pppox=y
+CONFIG_PACKAGE_kmod-ppp=y
+
+# --- TCP Congestion Control (Google BBR: Giảm ping, chống nghẽn, tăng tốc download/WiFi) ---
+CONFIG_PACKAGE_kmod-tcp-bbr=y
+
+# ============================================================
+# WiFi - ỔN ĐỊNH + 802.11k/v (thay thế wpad-basic)
+# ============================================================
+
+# --- WiFi Kernel Drivers ---
+CONFIG_PACKAGE_kmod-mt7603=y
+CONFIG_PACKAGE_kmod-mt76x2=y
+CONFIG_PACKAGE_kmod-mt76-core=y
+CONFIG_PACKAGE_kmod-mac80211=y
+CONFIG_PACKAGE_kmod-cfg80211=y
+
+# --- wpad-mbedtls thay cho wpad-basic (hỗ trợ 802.11k/v) ---
+# CONFIG_PACKAGE_wpad-basic-mbedtls is not set
+CONFIG_PACKAGE_wpad-mbedtls=y
+CONFIG_WPA_MSG_MIN_PRIORITY=3
+
+# --- WiFi Utilities ---
+CONFIG_PACKAGE_iwinfo=y
+
+# ============================================================
+# USB (chỉ driver mặc định, không storage)
+# ============================================================
+
+CONFIG_PACKAGE_kmod-usb3=y
+CONFIG_PACKAGE_kmod-usb-core=y
+CONFIG_PACKAGE_kmod-tun=y
+
+# --- LED triggers (v25.12.5: new network LED trigger) ---
+CONFIG_PACKAGE_kmod-leds-gpio=y
+CONFIG_PACKAGE_kmod-ledtrig-netdev=y
+
+# --- AdGuard Home (chặn quảng cáo - Web UI: http://192.168.1.1:3000) ---
+CONFIG_PACKAGE_adguardhome=y
+# CONFIG_PACKAGE_luci-app-adguardhome is not set
+
+# ============================================================
+# LuCI WEB INTERFACE (mặc định)
+# ============================================================
+
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-mod-network=y
+CONFIG_PACKAGE_luci-mod-status=y
+CONFIG_PACKAGE_luci-mod-system=y
+CONFIG_PACKAGE_luci-theme-bootstrap=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+
+# --- HTTP Server ---
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+
+# ============================================================
+# BASE SYSTEM (mặc định)
+# ============================================================
+
+CONFIG_PACKAGE_base-files=y
+CONFIG_PACKAGE_busybox=y
+CONFIG_PACKAGE_dropbear=y
+CONFIG_PACKAGE_fstools=y
+CONFIG_PACKAGE_libc=y
+CONFIG_PACKAGE_netifd=y
+CONFIG_PACKAGE_procd=y
+CONFIG_PACKAGE_uci=y
+# --- Package Manager (APK - mặc định trên OpenWrt main branch) ---
+CONFIG_USE_APK=y
+CONFIG_PACKAGE_apk-mbedtls=y
+# CONFIG_PACKAGE_opkg is not set
+CONFIG_PACKAGE_logd=y
+CONFIG_PACKAGE_urandom-seed=y
+
+# --- Tiện ích người dùng ---
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_nano=y
+
+# ============================================================
+# LOẠI BỎ (không mặc định)
+# ============================================================
+
+# CONFIG_PACKAGE_kmod-usb-storage is not set
+# CONFIG_PACKAGE_kmod-usb-ledtrig-usbport is not set
+# CONFIG_PACKAGE_block-mount is not set
+# CONFIG_PACKAGE_kmod-fs-ext4 is not set
+# CONFIG_PACKAGE_kmod-fs-vfat is not set
+# CONFIG_PACKAGE_luci-app-opkg is not set
+# CONFIG_PACKAGE_luci-app-sqm is not set
+# CONFIG_PACKAGE_luci-app-ddns is not set
+# CONFIG_PACKAGE_luci-app-upnp is not set
+# CONFIG_PACKAGE_luci-app-statistics is not set
+# CONFIG_PACKAGE_luci-proto-ipv6 is not set
+# CONFIG_PACKAGE_luci-proto-wireguard is not set
+# CONFIG_PACKAGE_wireless-tools is not set
+# CONFIG_PACKAGE_openvpn-openssl is not set
+# CONFIG_PACKAGE_wireguard-tools is not set
+# CONFIG_PACKAGE_kmod-wireguard is not set
+# CONFIG_PACKAGE_avahi-daemon is not set
+# CONFIG_PACKAGE_igmpproxy is not set
+# CONFIG_PACKAGE_miniupnpd is not set
+# CONFIG_PACKAGE_samba4-server is not set
+# CONFIG_PACKAGE_vsftpd is not set
+# CONFIG_PACKAGE_tcpdump is not set
+# CONFIG_PACKAGE_strace is not set
+# CONFIG_PACKAGE_gdb is not set
+# CONFIG_PACKAGE_uboot-envtools is not set
+# CONFIG_PACKAGE_kmod-usb-printer is not set
+# CONFIG_FEED_telephony is not set
+# CONFIG_FEED_video is not set
+# CONFIG_FEED_routing is not set
+
+# --- Strip để giảm dung lượng ---
+CONFIG_STRIP_KERNEL_EXPORTS=y
