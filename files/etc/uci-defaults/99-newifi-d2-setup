@@ -290,11 +290,11 @@ uci commit firewall
 if [ -f /etc/init.d/adguardhome ]; then
     /etc/init.d/adguardhome enable
 
-    # Cấu hình UCI cho AdGuard Home service (Giới hạn RAM và tối ưu Garbage Collection)
+    # Cấu hình UCI cho AdGuard Home service (Giảm triệt để CPU, tăng GOGC để không bóp WiFi)
     uci set adguardhome.config=adguardhome
     uci set adguardhome.config.enabled='1'
-    uci set adguardhome.config.gc='50'
-    uci set adguardhome.config.memlimit='256'
+    uci set adguardhome.config.gc='200'
+    uci set adguardhome.config.memlimit='128'
     uci set adguardhome.config.config_file='/etc/adguardhome/adguardhome.yaml'
     uci set adguardhome.config.work_dir='/var/lib/adguardhome'
     uci commit adguardhome
@@ -317,25 +317,26 @@ dns:
     - 0.0.0.0
   port: 53
   upstream_dns:
-    - 8.8.8.8
-    - 8.8.4.4
     - 1.1.1.1
+    - 8.8.8.8
     - 1.0.0.1
-    - https://dns.google/dns-query
-    - https://dns.cloudflare.com/dns-query
+    - 8.8.4.4
   fallback_dns:
-    - 8.8.8.8
     - 1.1.1.1
+    - 8.8.8.8
   bootstrap_dns:
-    - 8.8.8.8
     - 1.1.1.1
-  upstream_mode: parallel
+    - 8.8.8.8
+  upstream_mode: load_balance
   all_servers: false
-  fastest_addr: true
+  # TẮT fastest_addr: Tránh mở hàng trăm kết nối ping/probe gây nghẽn CPU và bóp băng thông WiFi
+  fastest_addr: false
   cache_size: 4194304
-  cache_ttl_min: 0
-  cache_ttl_max: 3600
-  cache_optimistic: false
+  # Cache tối thiểu 5 phút (300s) để truy vấn lặp lại trả về 0ms từ RAM
+  cache_ttl_min: 300
+  cache_ttl_max: 86400
+  # Cache Optimistic: Trả lời kết quả ngay lập tức trong 0.1ms từ cache ngầm
+  cache_optimistic: true
   ratelimit: 0
   ratelimit_subnet_len_ipv4: 32
   ratelimit_whitelist:
@@ -346,15 +347,15 @@ dns:
     - version.bind
     - id.server
     - hostname.bind
-# Giới hạn querylog và stats lưu trong RAM (24h, tối đa 1000 bản ghi) để không bao giờ bị tràn RAM khi nhiều thiết bị
+# Tắt ghi file log và thống kê liên tục để giải phóng 100% I/O đĩa và CPU
 querylog:
-  enabled: true
-  file_enabled: true
+  enabled: false
+  file_enabled: false
   interval: 24h
-  size_memory: 1000
+  size_memory: 0
   ignored: []
 stats:
-  enabled: true
+  enabled: false
   interval: 24h
   ignored: []
 filtering:
