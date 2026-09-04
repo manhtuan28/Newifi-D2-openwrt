@@ -43,6 +43,13 @@ uci commit network
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
 uci set dhcp.odhcpd.maindhcp='0' 2>/dev/null
+
+# === Cố định IP cho Server (192.168.1.166 cắm LAN) ===
+uci -q delete dhcp.server_lan
+uci set dhcp.server_lan=host
+uci set dhcp.server_lan.name='Server'
+uci set dhcp.server_lan.mac='3c:52:a1:68:66:e3'
+uci set dhcp.server_lan.ip='192.168.1.166'
 uci commit dhcp
 
 # === System ===
@@ -116,15 +123,18 @@ done
 [ -z "$RADIO_2G" ] && RADIO_2G="radio0"
 [ -z "$RADIO_5G" ] && RADIO_5G="radio1"
 
-# === Cấu hình Radio 2.4GHz (Max công suất + HT20 xuyên tường cực mạnh) ===
+# === Cấu hình Radio 2.4GHz (HT20 + chống méo PA + giải phóng Airtime) ===
 if [ -n "$RADIO_2G" ]; then
     uci set wireless.${RADIO_2G}.disabled='0'
     uci set wireless.${RADIO_2G}.channel='6'
     uci set wireless.${RADIO_2G}.htmode='HT20'
     uci set wireless.${RADIO_2G}.country='US'
-    uci set wireless.${RADIO_2G}.txpower='20'
-    # Tắt quét kênh nền: MT7603 chỉ có 1 radio chain, khi quét sẽ tắt AP → iPhone mất kết nối
+    # Công suất 18 dBm: mức tối ưu của MT7603, không bị bão hòa méo sóng (EVM clipping) gây rớt gói và ping spike
+    uci set wireless.${RADIO_2G}.txpower='18'
+    # Tắt quét kênh nền: MT7603 chỉ có 1 radio chain, khi quét sẽ dừng phát sóng gây lag và rớt mạng
     uci set wireless.${RADIO_2G}.noscan='1'
+    # Tắt tốc độ 802.11b cổ lỗ sĩ (1-11Mbps), bắt buộc chạy OFDM (6-54Mbps) và HT để giải phóng 80% airtime
+    uci set wireless.${RADIO_2G}.legacy_rates='0'
 fi
 
 # === Cấu hình Radio 5GHz (Tốc độ cao + Max công suất) ===
@@ -156,11 +166,13 @@ if [ -n "$RADIO_2G" ]; then
     uci set wireless.default_radio0.bss_transition='0'
     uci set wireless.default_radio0.ieee80211r='0'
     uci set wireless.default_radio0.disassoc_low_ack='0'
-    uci set wireless.default_radio0.skip_inactivity_poll='0'
+    # QUAN TRỌNG: skip_inactivity_poll=1 để hostapd không gửi null probe deauth iPhone khi máy ngủ
+    uci set wireless.default_radio0.skip_inactivity_poll='1'
     uci set wireless.default_radio0.ap_max_inactivity='86400'
     uci set wireless.default_radio0.max_inactivity='86400'
     uci set wireless.default_radio0.wpa_group_rekey='86400'
-    uci set wireless.default_radio0.uapsd_advertisement_enabled='1'
+    # Tắt U-APSD: driver mt7603 bị lỗi đọng hàng đợi gói tin với iOS power-save gây lag 5-10s
+    uci set wireless.default_radio0.uapsd_advertisement_enabled='0'
     uci set wireless.default_radio0.wmm='1'
     # DTIM=3 cho iPhone power-save có đủ thời gian thức dậy nhận frame
     uci set wireless.default_radio0.dtim_period='3'
@@ -181,11 +193,11 @@ if [ -n "$RADIO_5G" ]; then
     uci set wireless.default_radio1.bss_transition='0'
     uci set wireless.default_radio1.ieee80211r='0'
     uci set wireless.default_radio1.disassoc_low_ack='0'
-    uci set wireless.default_radio1.skip_inactivity_poll='0'
+    uci set wireless.default_radio1.skip_inactivity_poll='1'
     uci set wireless.default_radio1.ap_max_inactivity='86400'
     uci set wireless.default_radio1.max_inactivity='86400'
     uci set wireless.default_radio1.wpa_group_rekey='86400'
-    uci set wireless.default_radio1.uapsd_advertisement_enabled='1'
+    uci set wireless.default_radio1.uapsd_advertisement_enabled='0'
     uci set wireless.default_radio1.wmm='1'
     uci set wireless.default_radio1.dtim_period='3'
 fi
@@ -252,11 +264,12 @@ uci -q delete dhcp.lan.dhcp_option
 uci add_list dhcp.lan.dhcp_option='6,192.168.1.1'
 uci commit dhcp
 
-# === Bắt buộc toàn bộ thiết bị phải dùng AdGuard Home (Chống bypass DoT/Private DNS) ===
+# === Bắt buộc toàn bộ thiết bị phải dùng AdGuard Home (Ngoại trừ Server 192.168.1.166) ===
 uci -q delete firewall.dns_redirect
 uci set firewall.dns_redirect=redirect
 uci set firewall.dns_redirect.name='Intercept-DNS'
 uci set firewall.dns_redirect.src='lan'
+uci set firewall.dns_redirect.src_ip='!192.168.1.166'
 uci set firewall.dns_redirect.proto='tcp udp'
 uci set firewall.dns_redirect.src_dport='53'
 uci set firewall.dns_redirect.dest_port='53'
@@ -266,6 +279,7 @@ uci -q delete firewall.block_dot
 uci set firewall.block_dot=rule
 uci set firewall.block_dot.name='Block-DoT-Port853'
 uci set firewall.block_dot.src='lan'
+uci set firewall.block_dot.src_ip='!192.168.1.166'
 uci set firewall.block_dot.dest='wan'
 uci set firewall.block_dot.proto='tcp udp'
 uci set firewall.block_dot.dest_port='853'
@@ -327,6 +341,7 @@ dns:
   ratelimit_whitelist:
     - 127.0.0.1
     - 192.168.1.1
+    - 192.168.1.166
   blocked_hosts:
     - version.bind
     - id.server
@@ -357,8 +372,8 @@ filtering:
   rewrites: []
 filters:
   - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
-    name: AdAway Default Blocklist
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
     id: 1
   - enabled: true
     url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_3.txt
@@ -369,6 +384,8 @@ filters:
     name: ABPVN - Chan quang cao Viet Nam
     id: 3
 user_rules:
+  # SERVER (192.168.1.166): Miễn nhiễm 100% mọi bộ lọc quảng cáo, tốc độ mạng tối đa
+  - '@@*$client=192.168.1.166'
   - '||freefiremobile.com^'
   - '||ff.garena.com^'
   - '||cdo.ff.garena.com^'
@@ -423,6 +440,23 @@ user_rules:
   - '@@||vlstream.net^'
   - '@@||qooglevideo.com^'
   - '@@||adxcontent.com^'
+clients:
+  runtime: []
+  persistent:
+    - name: Server
+      ids:
+        - 192.168.1.166
+        - 3c:52:a1:68:66:e3
+      tags:
+        - user_regular
+      use_global_settings: false
+      filtering_enabled: false
+      parental_enabled: false
+      safebrowsing_enabled: false
+      safesearch_enabled: false
+      use_global_blocked_services: false
+      blocked_services: []
+      upstreams: []
 schema_version: 29
 ADGEOF
 
