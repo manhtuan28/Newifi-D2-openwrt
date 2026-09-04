@@ -441,23 +441,6 @@ user_rules:
   - '@@||vlstream.net^'
   - '@@||qooglevideo.com^'
   - '@@||adxcontent.com^'
-clients:
-  runtime: []
-  persistent:
-    - name: Server
-      ids:
-        - 192.168.1.166
-        - 3c:52:a1:68:66:e3
-      tags:
-        - user_regular
-      use_global_settings: false
-      filtering_enabled: false
-      parental_enabled: false
-      safebrowsing_enabled: false
-      safesearch_enabled: false
-      use_global_blocked_services: false
-      blocked_services: []
-      upstreams: []
 schema_version: 29
 ADGEOF
 
