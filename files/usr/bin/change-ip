@@ -1,0 +1,71 @@
+#!/bin/sh
+# ============================================================
+# change-ip — Đổi IP WAN công cộng bằng cách reconnect PPPoE
+# Dùng: change-ip
+# ============================================================
+
+# Màu sắc output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}  🔄 NEWIFI D2 — ĐỔI IP CÔNG CỘNG${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Lấy IP cũ
+OLD_IP=$(ifstatus wan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+if [ -z "$OLD_IP" ]; then
+    OLD_IP=$(ifstatus pppoe-wan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+fi
+[ -z "$OLD_IP" ] && OLD_IP="Không xác định"
+
+echo -e "${YELLOW}📍 IP hiện tại: ${RED}${OLD_IP}${NC}"
+echo ""
+
+# Ngắt PPPoE
+echo -e "${YELLOW}⏳ Đang ngắt kết nối PPPoE...${NC}"
+ifdown wan
+sleep 3
+
+# Kết nối lại PPPoE
+echo -e "${YELLOW}⏳ Đang kết nối lại PPPoE...${NC}"
+ifup wan
+sleep 5
+
+# Chờ WAN lên (tối đa 30 giây)
+WAIT=0
+MAX_WAIT=30
+NEW_IP=""
+while [ $WAIT -lt $MAX_WAIT ]; do
+    NEW_IP=$(ifstatus wan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+    if [ -z "$NEW_IP" ]; then
+        NEW_IP=$(ifstatus pppoe-wan 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+    fi
+    [ -n "$NEW_IP" ] && break
+    sleep 2
+    WAIT=$((WAIT + 2))
+    echo -e "${YELLOW}  ⏳ Đang chờ IP mới... (${WAIT}s/${MAX_WAIT}s)${NC}"
+done
+
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+if [ -n "$NEW_IP" ]; then
+    if [ "$OLD_IP" != "$NEW_IP" ]; then
+        echo -e "${GREEN}✅ ĐỔI IP THÀNH CÔNG!${NC}"
+        echo -e "   IP cũ:  ${RED}${OLD_IP}${NC}"
+        echo -e "   IP mới: ${GREEN}${NEW_IP}${NC}"
+    else
+        echo -e "${YELLOW}⚠️  IP không đổi (ISP giữ nguyên IP)${NC}"
+        echo -e "   IP: ${YELLOW}${NEW_IP}${NC}"
+        echo -e "   💡 Thử lại sau vài phút hoặc chờ lease ISP hết hạn"
+    fi
+else
+    echo -e "${RED}❌ THẤT BẠI: Không lấy được IP mới sau ${MAX_WAIT}s${NC}"
+    echo -e "   💡 Kiểm tra kết nối PPPoE: ifstatus wan"
+fi
+
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
