@@ -129,12 +129,12 @@ if [ -n "$RADIO_2G" ]; then
     uci set wireless.${RADIO_2G}.channel='6'
     uci set wireless.${RADIO_2G}.htmode='HT20'
     uci set wireless.${RADIO_2G}.country='US'
-    # Công suất 18 dBm: mức tối ưu của MT7603, không bị bão hòa méo sóng (EVM clipping) gây rớt gói và ping spike
-    uci set wireless.${RADIO_2G}.txpower='18'
+    # Công suất phát tối đa 23 dBm (200mW) giúp sóng xuyên tường mạnh mẽ, phủ kín nhà vệ sinh và góc khuất
+    uci set wireless.${RADIO_2G}.txpower='23'
     # Tắt quét kênh nền: MT7603 chỉ có 1 radio chain, khi quét sẽ dừng phát sóng gây lag và rớt mạng
     uci set wireless.${RADIO_2G}.noscan='1'
-    # Tắt tốc độ 802.11b cổ lỗ sĩ (1-11Mbps), bắt buộc chạy OFDM (6-54Mbps) và HT để giải phóng 80% airtime
-    uci set wireless.${RADIO_2G}.legacy_rates='0'
+    # Bật legacy_rates (1-11Mbps) để điện thoại khi vào phòng kín/nhà vệ sinh vẫn nhận được beacon và duy trì sóng
+    uci set wireless.${RADIO_2G}.legacy_rates='1'
 fi
 
 # === Cấu hình Radio 5GHz (Tốc độ cao + Max công suất) ===

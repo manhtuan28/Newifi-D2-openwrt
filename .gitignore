@@ -1,6 +1,7 @@
 *.o
 *.log
 .DS_Store
+.agents
 .*.swp
 /env
 /dl
